@@ -1,0 +1,598 @@
+# Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+ 
+AWSTemplateFormatVersion: 2010-09-09
+Description: Personalize retraining solution
+Transform: AWS::Serverless-2016-10-31
+
+Parameters: 
+  RetrainingRate: 
+    Type: String
+    Default: rate(7 days)
+    Description: The rate (as defined in https://docs.aws.amazon.com/eventbridge/latest/userguide/scheduled-events.html) at which retraining of personalize should happen. Defaults to "rate(1 day)"
+  ImportRoleArn: 
+    Type: String
+    Description: ARN of the role that is used to re-import the dataset from S3 (requires read privileges to the S3 bucket containing the dataset).
+  ItemDatasetArn: 
+    Type: String
+    Description: ARN of Personalize item dataset that should be re-imported.
+  UserDatasetArn: 
+    Type: String
+    Description: ARN of Personalize user dataset that should be re-imported.
+  UserInteractionDatasetArn: 
+    Type: String
+    Description: ARN of Personalize user-item interaction dataset that should be re-imported.
+  S3ItemDatasourcePath: 
+    Type: String
+    Description: Full path to the file used to update the item datasource (s3://path/to/file.csv).
+  S3UserDatasourcePath: 
+    Type: String
+    Description: Full path to the file used to update the user datasource (s3://path/to/file.csv).
+  S3UserInteractionDatasourcePath: 
+    Type: String
+    Description: Full path to the file used to update the user-item interaction datasource (s3://path/to/file.csv).
+  SolutionArn:
+    Type: String
+    Description: ARN of the Solution that should be retrained.
+  CampaignArn:
+    Type: String
+    Description: ARN of the Campaign that should be updated after the new solution version is created.
+  PollInterval:
+    Type: Number
+    Default: 600
+    Description: The interval (in seconds) in which we poll for updates on the status of the retraining (default is 600).
+
+Resources:
+  CreateSolutionVersionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com" 
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        -
+          PolicyName: "TriggerPersonalizeDataImport"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: "personalize:CreateSolutionVersion"
+                Resource: "*"
+        -
+          PolicyName: "PassRole"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: "iam:PassRole"
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: "personalize.amazonaws.com"
+  ImportDatasetRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com" 
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        -
+          PolicyName: "TriggerPersonalizeDataImport"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: "personalize:CreateDatasetImportJob"
+                Resource: "*"
+        -
+          PolicyName: "PassRole"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: "iam:PassRole"
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: "personalize.amazonaws.com"
+  ImportDataset:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: ImportDataset
+      Handler: lambda.lambda_handler
+      Role:
+        Fn::GetAtt: 
+          - "ImportDatasetRole"
+          - "Arn"
+      CodeUri: lambda-import-dataset/
+      Environment:
+        Variables:
+          IMPORT_ROLE_ARN:
+            Ref: ImportRoleArn
+      Runtime: python3.7
+      Timeout: 300
+  PreprocessDatasetsRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com" 
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+  PreprocessDatasets:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: PreprocessDatasets
+      Handler: lambda.lambda_handler
+      Role:
+        Fn::GetAtt: 
+          - "PreprocessDatasetsRole"
+          - "Arn"
+      CodeUri: lambda-preprocess-datasets/
+      Environment:
+        Variables:
+          ITEM_DATASET_ARN:
+            Ref: ItemDatasetArn
+          USER_DATASET_ARN:
+            Ref: UserDatasetArn
+          USER_INTERACTIONDATASET_ARN:
+            Ref: UserInteractionDatasetArn
+          S3_ITEM_DATASOURCE_PATH:
+            Ref: S3ItemDatasourcePath
+          S3_USER_DATASOURCE_PATH:
+            Ref: S3UserDatasourcePath
+          S3_USERINTERACTION_DATASOURCE_PATH:
+            Ref: S3UserInteractionDatasourcePath
+      Runtime: python3.7
+      Timeout: 300
+  CreateSolutionVersion:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: CreateSolutionVersion
+      Handler: lambda.lambda_handler
+      Role:
+        Fn::GetAtt: 
+          - "CreateSolutionVersionRole"
+          - "Arn"
+      CodeUri: lambda-create-solution-version/
+      Environment:
+        Variables:
+          SOLUTION_ARN:
+            Ref: SolutionArn
+      Runtime: python3.7
+      Timeout: 300
+  ImportDatasetStatusRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com" 
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        -
+          PolicyName: "TriggerPersonalizeDataImport"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: "personalize:DescribeDatasetImportJob"
+                Resource: "*"
+        -
+          PolicyName: "PassRole"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: "iam:PassRole"
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: "personalize.amazonaws.com"
+  ImportDatasetStatus:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: ImportDatasetStatus
+      Handler: lambda.lambda_handler
+      Role:
+        Fn::GetAtt: 
+          - "ImportDatasetStatusRole"
+          - "Arn"
+      CodeUri: lambda-import-dataset-status/
+      Runtime: python3.7
+      Timeout: 300
+  SolutionVersionStatusRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com" 
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        -
+          PolicyName: "DescribeSolutionVersion"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: "personalize:DescribeSolutionVersion"
+                Resource: "*"
+        -
+          PolicyName: "PassRole"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: "iam:PassRole"
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: "personalize.amazonaws.com"
+  SolutionVersionStatus:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: SolutionVersionStatus
+      Handler: lambda.lambda_handler
+      Role:
+        Fn::GetAtt: 
+          - "SolutionVersionStatusRole"
+          - "Arn"
+      CodeUri: lambda-solution-version-status/
+      Runtime: python3.7
+      Timeout: 300
+  CampaignUpdateRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com" 
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        -
+          PolicyName: "UpdateCampaign"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: "personalize:UpdateCampaign"
+                Resource: "*"
+        -
+          PolicyName: "PassRole"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: "iam:PassRole"
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: "personalize.amazonaws.com"
+  UpdateCampaign:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: UpdateCampaign
+      Handler: lambda.lambda_handler
+      Role:
+        Fn::GetAtt: 
+          - "CampaignUpdateRole"
+          - "Arn"
+      Environment:
+        Variables:
+          CAMPAIGN_ARN:
+            Ref: CampaignArn
+      CodeUri: lambda-deploy-campaign/
+      Runtime: python3.7
+      Timeout: 300
+  CampaignStatusRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com" 
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        -
+          PolicyName: "DescribeCampaign"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: "personalize:DescribeCampaign"
+                Resource: "*"
+        -
+          PolicyName: "PassRole"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: "iam:PassRole"
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: "personalize.amazonaws.com"
+  CampaignStatus:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: CampaignStatus
+      Handler: lambda.lambda_handler
+      Role:
+        Fn::GetAtt: 
+          - "CampaignStatusRole"
+          - "Arn"
+      CodeUri: lambda-campaign-status/
+      Runtime: python3.7
+      Timeout: 300
+  
+  ScheduledRule: 
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: "ScheduledRule"
+      ScheduleExpression: 
+        Ref: RetrainingRate
+      State: "ENABLED"
+      Targets: 
+        - 
+          Arn: 
+            Ref:
+              RetrainPersonalizeFunction
+          Id: "TargetFunctionV1"
+          RoleArn:
+            Fn::GetAtt: 
+                - "ScheduleRuleRole"
+                - "Arn"
+  ScheduleRuleRole: 
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: events.amazonaws.com
+            Action: "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: StatesExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "states:StartExecution"
+                Resource: "*"
+  StepFunctionExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: states.amazonaws.com
+            Action: "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: StatesExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "lambda:InvokeFunction"
+                Resource: "*"
+  RetrainPersonalizeFunction:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      DefinitionString: !Sub |-
+          {
+              "Comment": "Retrains Personalize setup",
+              "StartAt": "Preprocess Dataset Infos",
+              "States": {
+                  "Preprocess Dataset Infos": {
+                      "Type": "Task",
+                      "Resource": "${PreprocessDatasets.Arn}",
+                      "ResultPath": "$.datasets",
+                      "Next": "Reimport All Datasets"
+                  },
+                  "Reimport All Datasets": {
+                      "Type": "Map",
+                      "ItemsPath": "$.datasets",
+                      "MaxConcurrency": 0,
+                      "Next": "Create Solution Version",
+                      "ResultPath": "$.datasetImport",
+                      "Iterator": {
+                          "StartAt": "Import Dataset",
+                          "States": {
+                              "Import Dataset": {
+                                  "Type": "Task",
+                                  "Resource": "${ImportDataset.Arn}",
+                                  "ResultPath": "$.importJobArn",
+                                  "Catch": [],
+                                  "Next": "Wait X Seconds for Import Job"
+                              },
+                              "Wait X Seconds for Import Job": {
+                                  "Type": "Wait",
+                                  "Seconds": 600,
+                                  "Next": "Get Job Status"
+                              },
+                              "Get Job Status": {
+                                  "Type": "Task",
+                                  "Resource": "${ImportDatasetStatus.Arn}",
+                                  "ResultPath": "$.importJobStatus",
+                                  "Next": "Job Complete?"
+                              },
+                              "Job Complete?": {
+                                  "Type": "Choice",
+                                  "Choices": [
+                                      {
+                                          "Variable": "$.importJobStatus",
+                                          "StringEquals": "CREATE FAILED",
+                                          "Next": "Import Failed"
+                                      },
+                                      {
+                                          "Variable": "$.importJobStatus",
+                                          "StringEquals": "ACTIVE",
+                                          "Next": "Import Successful"
+                                      }
+                                  ],
+                                  "Default": "Wait X Seconds for Import Job"
+                              },
+                              "Import Failed": {
+                                "Type": "Fail"
+                              },
+                              "Import Successful": {
+                                "Type": "Succeed"
+                              }
+                          }
+                      }
+                  },
+                  "Create Solution Version": {
+                      "Type": "Task",
+                      "Resource": "${CreateSolutionVersion.Arn}",
+                      "ResultPath": "$.solutionVersionArn",
+                      "Next": "Wait X Seconds for Solution Version"
+                  },
+                  "Wait X Seconds for Solution Version": {
+                      "Type": "Wait",
+                      "Seconds": 600,
+                      "Next": "Get Solution Version Status"
+                  },
+                  "Get Solution Version Status": {
+                      "Type": "Task",
+                      "Resource": "${SolutionVersionStatus.Arn}",
+                      "ResultPath": "$.solutionVersionStatus",
+                      "Next": "Solution Version Active?"
+                  },
+                  "Solution Version Active?": {
+                      "Type": "Choice",
+                      "Choices": [
+                          {
+                              "Variable": "$.solutionVersionStatus",
+                              "StringEquals": "CREATE FAILED",
+                              "Next": "Report Failure"
+                          },
+                          {
+                              "Variable": "$.solutionVersionStatus",
+                              "StringEquals": "ACTIVE",
+                              "Next": "Update Campaign"
+                          }
+                      ],
+                      "Default": "Wait X Seconds for Solution Version"
+                  },
+                  "Update Campaign": {
+                      "Type": "Task",
+                      "Resource": "${UpdateCampaign.Arn}",
+                      "ResultPath": "$.campaignArn",
+                      "Next": "Get Campaign Status"
+                  },
+                  "Get Campaign Status": {
+                      "Type": "Task",
+                      "Resource": "${CampaignStatus.Arn}",
+                      "ResultPath": "$.campaignStatus",
+                      "Next": "Campaign Active?"
+                  },
+                  "Campaign Active?": {
+                      "Type": "Choice",
+                      "Choices": [
+                          {
+                              "Variable": "$.campaignStatus",
+                              "StringEquals": "CREATE FAILED",
+                              "Next": "Report Failure"
+                          },
+                          {
+                              "Variable": "$.campaignStatus",
+                              "StringEquals": "ACTIVE",
+                              "Next": "Report Success"
+                          }
+                      ],
+                      "Default": "Wait X Seconds for Campaign"
+                  },
+                  "Wait X Seconds for Campaign": {
+                      "Type": "Wait",
+                      "Seconds": 600,
+                      "Next": "Get Campaign Status"
+                  },
+                  "Report Success": {
+                      "Type": "Succeed"
+                  },
+                  "Report Failure": {
+                      "Type": "Fail"
+                  }
+              }
+          }
+      RoleArn: !GetAtt StepFunctionExecutionRole.Arn
