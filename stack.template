@@ -9,7 +9,7 @@ Parameters:
   RetrainingRate: 
     Type: String
     Default: rate(7 days)
-    Description: The rate (as defined in https://docs.aws.amazon.com/eventbridge/latest/userguide/scheduled-events.html) at which retraining of personalize should happen. Defaults to "rate(1 day)"
+    Description: The rate (as defined in https://docs.aws.amazon.com/eventbridge/latest/userguide/scheduled-events.html) at which retraining of personalize should happen. Defaults to "rate(7 days)"
   ImportRoleArn: 
     Type: String
     Description: ARN of the role that is used to re-import the dataset from S3 (requires read privileges to the S3 bucket containing the dataset).

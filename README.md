@@ -1,7 +1,7 @@
 # Automated Personalize Retraining
 
 This sets up a pipeline for periodic re-training of your Personalize model.
-Once deployed, the sample will automatically trigger a re-import of your data and re-train the Personalize model (using the same parameters that you initially configured). The cadence of the re-training can be configured in the template (defaults to once per day).
+Once deployed, the sample will automatically trigger a re-import of your data and re-train the Personalize model (using the same parameters that you initially configured). The cadence of the re-training can be configured in the template (defaults to once per 7 days).
 
 ## Deployment
 
